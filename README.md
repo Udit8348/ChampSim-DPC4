@@ -1,5 +1,6 @@
 # ChampSim
 
+![DPC4 Page](https://sites.google.com/view/dpc4-2026/home)
 ![GitHub](https://img.shields.io/github/license/ChampSim/ChampSim)
 ![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/ChampSim/ChampSim/test.yml)
 ![GitHub forks](https://img.shields.io/github/forks/ChampSim/ChampSim)
@@ -26,7 +27,7 @@ vcpkg/vcpkg install
 
 # Compile
 
-ChampSim takes a JSON configuration script. Examine `champsim_config.json` for a fully-specified example. All options described in this file are optional and will be replaced with defaults if not specified. The configuration scrip can also be run without input, in which case an empty file is assumed.
+ChampSim takes a JSON configuration script. Examine `champsim_config.json` for a fully-specified example. All options described in this file are optional and will be replaced with defaults if not specified. The configuration script can also be run without input, in which case an empty file is assumed.
 ```
 $ ./config.sh <configuration file>
 $ make
