@@ -164,7 +164,7 @@ Failed: 0/12
 
 - Check that the traces directory exists
 - Verify the path is relative to the `traces/` folder
-- Ensure trace files have supported extensions: `.champsimtrace.xz`, `.champsimtrace`, `.trace.xz`, `.trace`
+- Ensure trace files have supported extensions: `.champsimtrace.xz`, `.champsimtrace`, `.trace.xz`, `.trace`,
 
 ### "ChampSim binary not found"
 
