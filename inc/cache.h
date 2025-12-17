@@ -50,8 +50,13 @@
 class CACHE : public champsim::operable
 {
   enum [[deprecated(
-      "Prefetchers may not specify arbitrary fill levels. Use CACHE::prefetch_line(pf_addr, fill_this_level, prefetch_metadata) instead.")]] FILL_LEVEL{
-      FILL_L1 = 1, FILL_L2 = 2, FILL_LLC = 4, FILL_DRC = 8, FILL_DRAM = 16};
+      "Prefetchers may not specify arbitrary fill levels. Use CACHE::prefetch_line(pf_addr, fill_this_level, prefetch_metadata) instead.")]] FILL_LEVEL {
+    FILL_L1 = 1,
+    FILL_L2 = 2,
+    FILL_LLC = 4,
+    FILL_DRC = 8,
+    FILL_DRAM = 16
+  };
 
   using channel_type = champsim::channel;
   using request_type = typename channel_type::request_type;
@@ -72,6 +77,7 @@ class CACHE : public champsim::operable
     bool skip_fill;
     bool is_translated;
     bool translate_issued = false;
+    bool is_instr = false;
 
     uint8_t asid[2] = {std::numeric_limits<uint8_t>::max(), std::numeric_limits<uint8_t>::max()};
 
@@ -100,6 +106,7 @@ public:
 
     access_type type;
     bool prefetch_from_this;
+    bool is_instr = false;
 
     uint8_t asid[2] = {std::numeric_limits<uint8_t>::max(), std::numeric_limits<uint8_t>::max()};
 
@@ -141,6 +148,9 @@ private:
 
   template <typename T>
   champsim::address module_address(const T& element) const;
+
+  template <typename T>
+  bool module_is_instr(const T& element) const;
 
   auto matches_address(champsim::address address) const;
   std::pair<mshr_type, request_type> mshr_and_forward_packet(const tag_lookup_type& handle_pkt);
