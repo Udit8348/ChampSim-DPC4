@@ -9,9 +9,13 @@ import json
 import datetime
 from pathlib import Path
 
+sys.stdout.reconfigure(line_buffering=True)
+
 
 class SimulationManager:
-    def __init__(self, champsim_root, config_file, traces_dir, num_parallel, warmup_instrs, sim_instrs):
+    def __init__(self, champsim_root, config_file, traces_dir,
+                 num_parallel, warmup_instrs, sim_instrs):
+
         self.champsim_root = Path(champsim_root).resolve()
         self.config_file = Path(config_file).resolve()
         self.num_parallel = num_parallel
@@ -25,11 +29,10 @@ class SimulationManager:
         # Load executable name from JSON
         self.executable_name = self._get_executable_name()
 
-        # Generate single timestamp for entire run
+        # Timestamp for this run
         self.run_timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        # Output directory structure:
-        # results/<suite>/<executable>/<timestamp>/
+        # Output directory
         self.results_base = (
             self.champsim_root /
             "results" /
@@ -39,16 +42,17 @@ class SimulationManager:
         )
 
         # Process tracking
+        # pid -> (proc, trace, log_path, outfile, start_time)
         self.active = {}
-        self.completed = []
-        self.failed = []
+        self.completed = []   # (trace, elapsed_seconds)
+        self.failed = []      # (trace, elapsed_seconds)
 
     def _get_executable_name(self):
         try:
             with open(self.config_file, "r") as f:
                 cfg = json.load(f)
             return cfg.get("executable_name", "champsim")
-        except:
+        except Exception:
             return "champsim"
 
     def validate_inputs(self):
@@ -70,8 +74,10 @@ class SimulationManager:
     def get_trace_files(self):
         patterns = [
             "*.champsimtrace.xz",
+            "*.champsimtrace.gz",
             "*.champsimtrace",
             "*.trace.xz",
+            "*.trace.gz",
             "*.trace",
             "*.champsim"
         ]
@@ -89,8 +95,10 @@ class SimulationManager:
 
         for ext in [
             ".champsimtrace.xz",
+            ".champsimtrace.gz",
             ".champsimtrace",
             ".trace.xz",
+            ".trace.gz",
             ".trace",
             ".champsim"
         ]:
@@ -116,20 +124,29 @@ class SimulationManager:
 
         try:
             outfile = open(log_path, "w")
-            proc = subprocess.Popen(cmd, stdout=outfile, stderr=subprocess.STDOUT)
+            start_time = time.time()
+            proc = subprocess.Popen(
+                cmd,
+                stdout=outfile,
+                stderr=subprocess.STDOUT
+            )
 
             print(f"  [PID {proc.pid}] Launched: {Path(trace_file).name}")
             print(f"             Output: {log_path}")
 
-            self.active[proc.pid] = (proc, trace_file, log_path, outfile)
+            self.active[proc.pid] = (
+                proc, trace_file, log_path, outfile, start_time
+            )
 
         except Exception as e:
             print(f"✗ Launch failed for {trace_file}: {e}")
-            self.failed.append(trace_file)
+            self.failed.append((trace_file, 0.0))
 
     def run(self):
         traces = self.get_trace_files()
         queue = list(traces)
+
+        self.run_start_time = time.time()
 
         print(f"Total traces: {len(traces)}")
         print(f"Parallel sims: {self.num_parallel}")
@@ -139,23 +156,35 @@ class SimulationManager:
 
         print("Launching initial batch of simulations...")
         for _ in range(min(self.num_parallel, len(queue))):
-            trace_file = queue.pop(0)
-            self.launch(trace_file)
+            self.launch(queue.pop(0))
 
         while self.active or queue:
             time.sleep(1)
 
             done = []
-            for pid, (proc, trace, log_path, outfile) in list(self.active.items()):
-                if proc.poll() is not None:  # completed
+            for pid, (proc, trace, log_path, outfile, start_time) in list(self.active.items()):
+                if proc.poll() is not None:
                     outfile.close()
 
+                    elapsed = time.time() - start_time
+                    elapsed_str = str(datetime.timedelta(seconds=int(elapsed)))
+
+                    # Append timing info to the trace log
+                    with open(log_path, "a") as f:
+                        f.write("\n")
+                        f.write("========================================\n")
+                        f.write(f"WALL_CLOCK_TIME: {elapsed_str}\n")
+                        f.write("========================================\n")
+
                     if proc.returncode == 0:
-                        print(f"✓ [PID {pid}] Completed: {Path(trace).name}")
-                        self.completed.append(trace)
+                        print(f"✓ [PID {pid}] Completed: {Path(trace).name} ({elapsed_str})")
+                        self.completed.append((trace, elapsed))
                     else:
-                        print(f"✗ [PID {pid}] Failed ({proc.returncode}): {Path(trace).name}")
-                        self.failed.append(trace)
+                        print(
+                            f"✗ [PID {pid}] Failed ({proc.returncode}): "
+                            f"{Path(trace).name} ({elapsed_str})"
+                        )
+                        self.failed.append((trace, elapsed))
 
                     done.append(pid)
 
@@ -163,28 +192,51 @@ class SimulationManager:
                 del self.active[pid]
 
             while queue and len(self.active) < self.num_parallel:
-                trace_file = queue.pop(0)
-                self.launch(trace_file)
+                self.launch(queue.pop(0))
+
+        total_elapsed = time.time() - self.run_start_time
+        total_str = str(datetime.timedelta(seconds=int(total_elapsed)))
 
         print("\nSummary:")
         print(f"  Completed: {len(self.completed)}")
         print(f"  Failed:    {len(self.failed)}")
+        print(f"  Total wall time: {total_str}")
 
         return len(self.failed) == 0
 
 
 def main():
-    parser = argparse.ArgumentParser(description="ChampSim Parallel Simulation Launcher")
+    parser = argparse.ArgumentParser(
+        description="ChampSim Parallel Simulation Launcher"
+    )
 
-    parser.add_argument("config_file", help="JSON config file containing executable_name")
-    parser.add_argument("traces_dir", help="subdirectory under traces/")
-    parser.add_argument("-n", "--num-parallel", type=int, default=8)
-    parser.add_argument("--warmup", type=int, default=20_000_000)
-    parser.add_argument("--sim", type=int, default=50_000_000)
+    parser.add_argument(
+        "config_file",
+        help="JSON config file containing executable_name"
+    )
+    parser.add_argument(
+        "traces_dir",
+        help="subdirectory under traces/"
+    )
+    parser.add_argument(
+        "-n", "--num-parallel",
+        type=int,
+        default=8
+    )
+    parser.add_argument(
+        "--warmup",
+        type=int,
+        default=20_000_000
+    )
+    parser.add_argument(
+        "--sim",
+        type=int,
+        default=50_000_000
+    )
 
     args = parser.parse_args()
 
-    root = Path(__file__).parent
+    root = Path(__file__).parent.resolve()
 
     if Path(args.config_file).is_absolute():
         config = Path(args.config_file)
