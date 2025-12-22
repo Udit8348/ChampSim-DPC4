@@ -65,7 +65,11 @@ def process_baseline_dir(baseline_dir: Path):
     if not rows:
         return
 
-    csv_name = f"{baseline_dir.parent.name}_1C_fullBW_baseline_{latest.name}.csv"
+    csv_name = (
+        f"{baseline_dir.parent.name}_"
+        f"{baseline_dir.name}_"
+        f"{latest.name}.csv"
+    )
     csv_path = latest / csv_name
 
     with csv_path.open("w", newline="") as f:
@@ -84,20 +88,22 @@ def process_baseline_dir(baseline_dir: Path):
     print(f"Wrote CSV: {csv_path} ({len(rows)} traces)")
 
 
-def main(root_dir: Path):
-    for path in root_dir.rglob("1C.fullBW.baseline"):
+def main(root_dir: Path, baseline_name: str):
+    for path in root_dir.rglob(baseline_name):
         if path.is_dir():
             process_baseline_dir(path)
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print(f"Usage: {sys.argv[0]} <results_root>")
+    if len(sys.argv) != 3:
+        print(f"Usage: {sys.argv[0]} <results_root> <baseline_dir_name>")
         sys.exit(1)
 
     root = Path(sys.argv[1]).resolve()
+    baseline_name = sys.argv[2]
+
     if not root.exists():
         print(f"ERROR: {root} does not exist")
         sys.exit(1)
 
-    main(root)
+    main(root, baseline_name)
