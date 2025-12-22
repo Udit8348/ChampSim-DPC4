@@ -12,15 +12,33 @@ from pathlib import Path
 sys.stdout.reconfigure(line_buffering=True)
 
 
+def load_skip_list(skip_file: Path) -> set[str]:
+    """
+    Load skip patterns from a text file.
+    Each non-empty, non-comment line is treated as a substring match.
+    """
+    if skip_file is None or not skip_file.exists():
+        return set()
+
+    patterns = set()
+    for line in skip_file.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        patterns.add(line)
+    return patterns
+
+
 class SimulationManager:
     def __init__(self, champsim_root, config_file, traces_dir,
-                 num_parallel, warmup_instrs, sim_instrs):
+                 num_parallel, warmup_instrs, sim_instrs, skip_patterns):
 
         self.champsim_root = Path(champsim_root).resolve()
         self.config_file = Path(config_file).resolve()
         self.num_parallel = num_parallel
         self.warmup_instrs = warmup_instrs
         self.sim_instrs = sim_instrs
+        self.skip_patterns = skip_patterns
 
         # Traces directory
         self.traces_base = self.champsim_root / "traces"
@@ -42,8 +60,7 @@ class SimulationManager:
         )
 
         # Process tracking
-        # pid -> (proc, trace, log_path, outfile, start_time)
-        self.active = {}
+        self.active = {}      # pid -> (proc, trace, log_path, outfile, start_time)
         self.completed = []   # (trace, elapsed_seconds)
         self.failed = []      # (trace, elapsed_seconds)
 
@@ -143,12 +160,30 @@ class SimulationManager:
             self.failed.append((trace_file, 0.0))
 
     def run(self):
-        traces = self.get_trace_files()
-        queue = list(traces)
+        all_traces = self.get_trace_files()
+
+        filtered = []
+        skipped = []
+
+        for t in all_traces:
+            name = Path(t).name
+            if any(pat in name for pat in self.skip_patterns):
+                skipped.append(name)
+            else:
+                filtered.append(t)
+
+        if skipped:
+            print("Skipping traces:")
+            for s in skipped:
+                print(f"  - {s}")
+            print()
+
+        queue = list(filtered)
 
         self.run_start_time = time.time()
 
-        print(f"Total traces: {len(traces)}")
+        print(f"Total traces found: {len(all_traces)}")
+        print(f"Traces after filtering: {len(queue)}")
         print(f"Parallel sims: {self.num_parallel}")
         print(f"Binary: {self.executable_name}")
         print(f"Traces directory: {self.traces_dir}")
@@ -169,7 +204,6 @@ class SimulationManager:
                     elapsed = time.time() - start_time
                     elapsed_str = str(datetime.timedelta(seconds=int(elapsed)))
 
-                    # Append timing info to the trace log
                     with open(log_path, "a") as f:
                         f.write("\n")
                         f.write("========================================\n")
@@ -221,7 +255,7 @@ def main():
     parser.add_argument(
         "-n", "--num-parallel",
         type=int,
-        default=8
+        default=128
     )
     parser.add_argument(
         "--warmup",
@@ -233,6 +267,12 @@ def main():
         type=int,
         default=50_000_000
     )
+    parser.add_argument(
+        "--skip-file",
+        type=Path,
+        default=None,
+        help="Optional file containing trace name substrings to skip"
+    )
 
     args = parser.parse_args()
 
@@ -243,13 +283,22 @@ def main():
     else:
         config = root / args.config_file
 
+    # Resolve skip file
+    if args.skip_file is not None:
+        skip_file = args.skip_file
+    else:
+        skip_file = root / "skip_traces.txt"
+
+    skip_patterns = load_skip_list(skip_file)
+
     manager = SimulationManager(
         champsim_root=root,
         config_file=config,
         traces_dir=args.traces_dir,
         num_parallel=args.num_parallel,
         warmup_instrs=args.warmup,
-        sim_instrs=args.sim
+        sim_instrs=args.sim,
+        skip_patterns=skip_patterns
     )
 
     if not manager.validate_inputs():
