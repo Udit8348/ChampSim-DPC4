@@ -1,5 +1,6 @@
 .csconfig/
 _configuration.mk
+results/
 
 **/__pycache__/
 *.pyc
