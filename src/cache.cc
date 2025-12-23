@@ -32,6 +32,13 @@
 #include "util/bits.h"
 #include "util/span.h"
 
+#ifdef CHAMPSIM_ORACLE_L1D
+static inline bool is_l1d_oracle(const std::string& name)
+{
+  return name.find("L1D") != std::string::npos || name.find("l1d") != std::string::npos;
+}
+#endif
+
 CACHE::CACHE(CACHE&& other)
     : operable(other),
 
@@ -266,40 +273,82 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
 
   // access cache
   auto [set_begin, set_end] = get_set_span(handle_pkt.address);
-  auto way = std::find_if(set_begin, set_end, [matcher = matches_address(handle_pkt.address)](const auto& x) { return x.valid && matcher(x); });
-  const auto hit = (way != set_end);
-  const auto useful_prefetch = (hit && way->prefetch && !handle_pkt.prefetch_from_this);
+  auto way = std::find_if(set_begin, set_end,
+      [matcher = matches_address(handle_pkt.address)](const auto& x) {
+        return x.valid && matcher(x);
+      });
+
+#ifdef CHAMPSIM_ORACLE_L1D
+  const bool oracle = is_l1d_oracle(NAME);
+  const bool hit = oracle ? true : (way != set_end);
+#else
+  const bool hit = (way != set_end);
+#endif
+
+  const auto useful_prefetch =
+      (hit && way != set_end && way->prefetch && !handle_pkt.prefetch_from_this);
 
   if constexpr (champsim::debug_print) {
-    fmt::print("[{}] {} instr_id: {} address: {} v_address: {} data: {} set: {} way: {} ({}) type: {} cycle: {}\n", NAME, __func__, handle_pkt.instr_id,
-               handle_pkt.address, handle_pkt.v_address, handle_pkt.data, get_set_index(handle_pkt.address), std::distance(set_begin, way),
-               hit ? "HIT" : "MISS", access_type_names.at(champsim::to_underlying(handle_pkt.type)), current_time.time_since_epoch() / clock_period);
+    fmt::print("[{}] {} instr_id: {} address: {} v_address: {} set: {} way: {} ({}) type: {} cycle: {}\n",
+               NAME, __func__, handle_pkt.instr_id,
+               handle_pkt.address, handle_pkt.v_address,
+               get_set_index(handle_pkt.address),
+               (way != set_end) ? std::distance(set_begin, way) : -1,
+               hit ? "HIT" : "MISS",
+               access_type_names.at(champsim::to_underlying(handle_pkt.type)),
+               current_time.time_since_epoch() / clock_period);
   }
 
   auto metadata_thru = handle_pkt.pf_metadata;
-  if (should_activate_prefetcher(handle_pkt) && !module_is_instr(handle_pkt)) { // limiting only to data line hits
-    metadata_thru = impl_prefetcher_cache_operate(module_address(handle_pkt), handle_pkt.ip, hit, useful_prefetch, handle_pkt.type, metadata_thru);
+  if (should_activate_prefetcher(handle_pkt) && !module_is_instr(handle_pkt)) {
+    metadata_thru =
+        impl_prefetcher_cache_operate(module_address(handle_pkt),
+                                      handle_pkt.ip,
+                                      hit,
+                                      useful_prefetch,
+                                      handle_pkt.type,
+                                      metadata_thru);
   }
 
   // update replacement policy
-  const auto way_idx = std::distance(set_begin, way);
-  impl_update_replacement_state(handle_pkt.cpu, get_set_index(handle_pkt.address), way_idx, module_address(handle_pkt), handle_pkt.ip, {}, handle_pkt.type,
+#ifdef CHAMPSIM_ORACLE_L1D
+  const long way_idx = (hit && way != set_end) ? std::distance(set_begin, way) : 0;
+#else
+  const long way_idx = std::distance(set_begin, way);
+#endif
+
+  impl_update_replacement_state(handle_pkt.cpu,
+                                get_set_index(handle_pkt.address),
+                                way_idx,
+                                module_address(handle_pkt),
+                                handle_pkt.ip,
+                                {},
+                                handle_pkt.type,
                                 hit);
 
   if (hit) {
     sim_stats.hits.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
 
-    response_type response{handle_pkt.address, handle_pkt.v_address, way->data, metadata_thru, handle_pkt.instr_depend_on_me};
+    champsim::address data_value =
+        (way != set_end) ? way->data : champsim::address{0};
+
+    response_type response{handle_pkt.address,
+                            handle_pkt.v_address,
+                            data_value,
+                            metadata_thru,
+                            handle_pkt.instr_depend_on_me};
+
     for (auto* ret : handle_pkt.to_return) {
       ret->push_back(response);
     }
 
-    way->dirty |= (handle_pkt.type == access_type::WRITE);
+    if (way != set_end) {
+      way->dirty |= (handle_pkt.type == access_type::WRITE);
 
-    // update prefetch stats and reset prefetch bit
-    if (useful_prefetch) {
-      ++sim_stats.pf_useful;
-      way->prefetch = false;
+      if (useful_prefetch) {
+        ++sim_stats.pf_useful;
+        way->prefetch = false;
+      }
     }
   }
 
@@ -338,6 +387,25 @@ bool CACHE::handle_miss(const tag_lookup_type& handle_pkt)
                handle_pkt.address, handle_pkt.v_address, access_type_names.at(champsim::to_underlying(handle_pkt.type)), handle_pkt.prefetch_from_this,
                current_time.time_since_epoch() / clock_period);
   }
+
+  // this function should never be called if we have the oracle enabled
+  #ifdef CHAMPSIM_ORACLE_L1D
+  if (is_l1d_oracle(NAME)) {
+    fmt::print(stderr,
+               "[ORACLE VIOLATION] L1D miss detected!\n"
+               "  Cache: {}\n"
+               "  CPU: {}\n"
+               "  Instr ID: {}\n"
+               "  Address: {}\n"
+               "  Type: {}\n",
+               NAME,
+               handle_pkt.cpu,
+               handle_pkt.instr_id,
+               handle_pkt.address,
+               access_type_names.at(champsim::to_underlying(handle_pkt.type)));
+    assert(false && "L1D miss occurred while CHAMPSIM_ORACLE_L1D is enabled");
+  }
+#endif
 
   mshr_type to_allocate{handle_pkt, current_time};
 
