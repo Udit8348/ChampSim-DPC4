@@ -13,10 +13,6 @@ sys.stdout.reconfigure(line_buffering=True)
 
 
 def load_skip_list(skip_file: Path) -> set[str]:
-    """
-    Load skip patterns from a text file.
-    Each non-empty, non-comment line is treated as a substring match.
-    """
     if skip_file is None or not skip_file.exists():
         return set()
 
@@ -30,9 +26,17 @@ def load_skip_list(skip_file: Path) -> set[str]:
 
 
 class SimulationManager:
-    def __init__(self, champsim_root, config_file, traces_dir,
-                 num_parallel, warmup_instrs, sim_instrs, skip_patterns):
-
+    def __init__(
+        self,
+        champsim_root,
+        config_file,
+        traces_dir,
+        num_parallel,
+        warmup_instrs,
+        sim_instrs,
+        skip_patterns,
+        results_base=None,
+    ):
         self.champsim_root = Path(champsim_root).resolve()
         self.config_file = Path(config_file).resolve()
         self.num_parallel = num_parallel
@@ -40,21 +44,30 @@ class SimulationManager:
         self.sim_instrs = sim_instrs
         self.skip_patterns = skip_patterns
 
-        # Traces directory
-        self.traces_base = self.champsim_root / "traces"
-        self.traces_dir = self.traces_base / traces_dir
+        # Resolve traces directory (absolute or under champsim_root/traces)
+        traces_dir = Path(traces_dir)
+        if traces_dir.is_absolute():
+            self.traces_dir = traces_dir
+        else:
+            self.traces_dir = self.champsim_root / "traces" / traces_dir
+
+        self.trace_set_name = self.traces_dir.name
 
         # Load executable name from JSON
         self.executable_name = self._get_executable_name()
 
-        # Timestamp for this run
+        # Timestamp
         self.run_timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        # Output directory
+        # Resolve results base
+        if results_base is not None:
+            results_root = Path(results_base).resolve()
+        else:
+            results_root = self.champsim_root / "results"
+
         self.results_base = (
-            self.champsim_root /
-            "results" /
-            traces_dir /
+            results_root /
+            self.trace_set_name /
             self.executable_name /
             self.run_timestamp
         )
@@ -96,7 +109,8 @@ class SimulationManager:
             "*.trace.xz",
             "*.trace.gz",
             "*.trace",
-            "*.champsim"
+            "*.champsim",
+            "*.champsim.gz"
         ]
 
         traces = []
@@ -117,7 +131,8 @@ class SimulationManager:
             ".trace.xz",
             ".trace.gz",
             ".trace",
-            ".champsim"
+            ".champsim",
+            ".champsim.gz"
         ]:
             if trace_name.endswith(ext):
                 trace_name = trace_name[:-len(ext)]
@@ -136,7 +151,7 @@ class SimulationManager:
             str(exe),
             "--warmup-instructions", str(self.warmup_instrs),
             "--simulation-instructions", str(self.sim_instrs),
-            trace_file
+            trace_file,
         ]
 
         try:
@@ -145,7 +160,7 @@ class SimulationManager:
             proc = subprocess.Popen(
                 cmd,
                 stdout=outfile,
-                stderr=subprocess.STDOUT
+                stderr=subprocess.STDOUT,
             )
 
             print(f"  [PID {proc.pid}] Launched: {Path(trace_file).name}")
@@ -179,7 +194,6 @@ class SimulationManager:
             print()
 
         queue = list(filtered)
-
         self.run_start_time = time.time()
 
         print(f"Total traces found: {len(all_traces)}")
@@ -244,51 +258,28 @@ def main():
         description="ChampSim Parallel Simulation Launcher"
     )
 
+    parser.add_argument("config_file")
+    parser.add_argument("traces_dir")
+    parser.add_argument("-n", "--num-parallel", type=int, default=10)
+    parser.add_argument("--warmup", type=int, default=20_000_000)
+    parser.add_argument("--sim", type=int, default=50_000_000)
+    parser.add_argument("--skip-file", type=Path, default=None)
     parser.add_argument(
-        "config_file",
-        help="JSON config file containing executable_name"
-    )
-    parser.add_argument(
-        "traces_dir",
-        help="subdirectory under traces/"
-    )
-    parser.add_argument(
-        "-n", "--num-parallel",
-        type=int,
-        default=128
-    )
-    parser.add_argument(
-        "--warmup",
-        type=int,
-        default=20_000_000
-    )
-    parser.add_argument(
-        "--sim",
-        type=int,
-        default=50_000_000
-    )
-    parser.add_argument(
-        "--skip-file",
+        "--results-base",
         type=Path,
         default=None,
-        help="Optional file containing trace name substrings to skip"
+        help="Optional base directory for results (e.g. /fast_data/...)",
     )
 
     args = parser.parse_args()
 
     root = Path(__file__).parent.resolve()
 
-    if Path(args.config_file).is_absolute():
-        config = Path(args.config_file)
-    else:
-        config = root / args.config_file
+    config = Path(args.config_file)
+    if not config.is_absolute():
+        config = root / config
 
-    # Resolve skip file
-    if args.skip_file is not None:
-        skip_file = args.skip_file
-    else:
-        skip_file = root / "skip_traces.txt"
-
+    skip_file = args.skip_file if args.skip_file else root / "skip_traces.txt"
     skip_patterns = load_skip_list(skip_file)
 
     manager = SimulationManager(
@@ -298,14 +289,14 @@ def main():
         num_parallel=args.num_parallel,
         warmup_instrs=args.warmup,
         sim_instrs=args.sim,
-        skip_patterns=skip_patterns
+        skip_patterns=skip_patterns,
+        results_base=args.results_base,
     )
 
     if not manager.validate_inputs():
         return 1
 
-    ok = manager.run()
-    return 0 if ok else 1
+    return 0 if manager.run() else 1
 
 
 if __name__ == "__main__":
